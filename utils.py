@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 async def check_ban(uid):
-    api_url = f"https://rawthug.onrender.com/check_ban/ {uid}"
+    api_url = f"https://rawthug.onrender.com/check_ban/{uid}"
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(api_url) as response:
@@ -24,3 +24,4 @@ async def check_ban(uid):
     except Exception as e:
         print(f"An error occurred: {e}")
         return None
+
