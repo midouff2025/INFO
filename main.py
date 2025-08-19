@@ -1,288 +1,204 @@
 import discord
-from discord.ext import commands
-from discord import app_commands
-import aiohttp
-from datetime import datetime
-import json
+from discord.ext import commands, tasks
+from flask import Flask
+import threading
 import os
 import asyncio
-import io
-import uuid
-import gc
-from datetime import datetime
+import aiohttp
 
-CONFIG_FILE = "info_channels.json"
-ALLOWED_CHANNEL_ID = 1403048599054454935  # القناة المسموح بها فقط
+# --- Flask Keep-Alive ---
+app = Flask(__name__)
+bot_name = "Loading..."
+ALLOWED_CHANNEL_ID = 1406848032070176788  # القناة المسموح بها فقط
 
-class InfoCommands(commands.Cog):
-    def __init__(self, bot):
-        self.bot = bot
-        self.api_url = "http://raw.thug4ff.com/info"
-        self.generate_url = "https://profile-generator.up.railway.app/api/profile"
-        self.session = aiohttp.ClientSession()
-        self.config_data = self.load_config()
-        self.cooldowns = {}
+@app.route("/")
+def home():
+    return f"Bot {bot_name} is operational"
 
-    def convert_unix_timestamp(self, timestamp: int) -> str:
-        return datetime.utcfromtimestamp(timestamp).strftime('%Y-%m-%d %H:%M:%S')
+def run_flask():
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host='0.0.0.0', port=port)
 
-    def check_request_limit(self, guild_id):
+# --- Discord Bot Setup ---
+TOKEN = os.environ.get("DISCORD_BOT_TOKEN")
+if not TOKEN:
+    raise ValueError("Missing DISCORD_BOT_TOKEN in environment variables")
+
+intents = discord.Intents.default()
+intents.message_content = True
+bot = commands.Bot(command_prefix="!", intents=intents)
+
+DEFAULT_LANG = "en"
+user_languages = {}
+session = None  # جلسة aiohttp واحدة لجميع الطلبات
+
+# --- Keep-Alive & Global Session Setup ---
+@tasks.loop(minutes=1)
+async def keep_alive():
+    """Ping Render URL كل دقيقة لضمان البوت لا ينام"""
+    global session
+    if session:
         try:
-            return self.is_server_subscribed(guild_id) or not self.is_limit_reached(guild_id)
+            url = "https://info-1-rngw.onrender.com"
+            async with session.get(url) as response:
+                print(f"💡 Keep-Alive ping status: {response.status}")
         except Exception as e:
-            print(f"Error checking request limit: {e}")
-            return False
+            print(f"⚠️ Keep-Alive error: {e}")
 
-    def load_config(self):
-        default_config = {
-            "servers": {},
-            "global_settings": {
-                "default_all_channels": False,
-                "default_cooldown": 30,
-                "default_daily_limit": 30
+@keep_alive.before_loop
+async def before_keep_alive():
+    await bot.wait_until_ready()
+
+# --- Check Ban Function ---
+async def check_ban(uid):
+    global session
+    if not session:
+        print("⚠️ Session not initialized for check_ban")
+        return None
+    api_url = f"http://raw.thug4ff.com/check_ban/{uid}"
+    try:
+        async with session.get(api_url) as response:
+            if response.status != 200:
+                return None
+            res_json = await response.json()
+            if res_json.get("status") != 200:
+                return None
+            info = res_json.get("data", {})
+            return {
+                "is_banned": info.get("is_banned", 0),
+                "nickname": info.get("nickname", ""),
+                "period": info.get("period", 0),
+                "region": info.get("region", "N/A")
             }
-        }
+    except Exception as e:
+        print(f"⚠️ Error in check_ban: {e}")
+        return None
 
-        if os.path.exists(CONFIG_FILE):
+# --- Bot Events ---
+@bot.event
+async def on_ready():
+    global bot_name, session
+    bot_name = str(bot.user)
+    print(f"✅ Bot connected as {bot.user} ({len(bot.guilds)} servers)")
+
+    # إنشاء جلسة aiohttp واحدة
+    if not session:
+        session = aiohttp.ClientSession()
+
+    # Start Flask server
+    flask_thread = threading.Thread(target=run_flask, daemon=True)
+    flask_thread.start()
+    print("🚀 Flask server started in background")
+
+    # Start periodic status update and Keep-Alive
+    update_status.start()
+    keep_alive.start()
+
+# --- حذف الرسائل أو تحذير إذا كانت خارج القناة المسموح بها ---
+@bot.event
+async def on_message(message):
+    if message.author.bot:
+        return  # تجاهل رسائل البوت
+
+    # إذا كانت الرسالة في القناة المخصصة
+    if message.channel.id == ALLOWED_CHANNEL_ID:
+        # حذف أي رسالة لا تبدأ بأمر البوت
+        if not message.content.startswith(bot.command_prefix):
             try:
-                with open(CONFIG_FILE, 'r') as f:
-                    loaded_config = json.load(f)
-                    loaded_config.setdefault("global_settings", {})
-                    loaded_config["global_settings"].setdefault("default_all_channels", False)
-                    loaded_config["global_settings"].setdefault("default_cooldown", 30)
-                    loaded_config["global_settings"].setdefault("default_daily_limit", 30)
-                    loaded_config.setdefault("servers", {})
-                    return loaded_config
-            except (json.JSONDecodeError, IOError) as e:
-                print(f"Error loading config: {e}")
-                return default_config
-        return default_config
-
-    def save_config(self):
-        try:
-            with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
-                json.dump(self.config_data, f, indent=4, ensure_ascii=False)
-        except IOError as e:
-            print(f"Error saving config: {e}")
-
-    async def is_channel_allowed(self, ctx):
-        return ctx.channel.id == ALLOWED_CHANNEL_ID
-
-    @commands.hybrid_command(name="setinfochannel", description="Allow a channel for !info commands")
-    @commands.has_permissions(administrator=True)
-    async def set_info_channel(self, ctx: commands.Context, channel: discord.TextChannel):
-        guild_id = str(ctx.guild.id)
-        self.config_data["servers"].setdefault(guild_id, {"info_channels": [], "config": {}})
-        if str(channel.id) not in self.config_data["servers"][guild_id]["info_channels"]:
-            self.config_data["servers"][guild_id]["info_channels"].append(str(channel.id))
-            self.save_config()
-            await ctx.send(f"✅ {channel.mention} is now allowed for !info commands")
-        else:
-            await ctx.send(f"ℹ️ {channel.mention} is already allowed for !info commands")
-
-    @commands.hybrid_command(name="removeinfochannel", description="Remove a channel from !info commands")
-    @commands.has_permissions(administrator=True)
-    async def remove_info_channel(self, ctx: commands.Context, channel: discord.TextChannel):
-        guild_id = str(ctx.guild.id)
-        if guild_id in self.config_data["servers"]:
-            if str(channel.id) in self.config_data["servers"][guild_id]["info_channels"]:
-                self.config_data["servers"][guild_id]["info_channels"].remove(str(channel.id))
-                self.save_config()
-                await ctx.send(f"✅ {channel.mention} has been removed from allowed channels")
-            else:
-                await ctx.send(f"❌ {channel.mention} is not in the list of allowed channels")
-        else:
-            await ctx.send("ℹ️ This server has no saved configuration")
-
-    @commands.hybrid_command(name="infochannels", description="List allowed channels")
-    async def list_info_channels(self, ctx: commands.Context):
-        guild_id = str(ctx.guild.id)
-
-        if guild_id in self.config_data["servers"] and self.config_data["servers"][guild_id]["info_channels"]:
-            channels = []
-            for channel_id in self.config_data["servers"][guild_id]["info_channels"]:
-                channel = ctx.guild.get_channel(int(channel_id))
-                channels.append(f"• {channel.mention if channel else f'ID: {channel_id}'}")
-
+                await message.delete()
+            except discord.Forbidden:
+                print(f"⚠️ Missing permissions to delete message in {message.channel}")
+        # معالجة أوامر البوت في القناة المسموح بها
+        await bot.process_commands(message)
+    else:
+        # إذا كانت الرسالة خارج القناة المسموح بها وبدأت بأمر البوت
+        if message.content.startswith(bot.command_prefix):
             embed = discord.Embed(
-                title="Allowed channels for !info",
-                description="\n".join(channels),
-                color=discord.Color.green()
+                title="⚠️ Command Not Allowed",
+                description=f"This command is only allowed in <#{ALLOWED_CHANNEL_ID}>",
+                color=discord.Color.gold()
             )
-            cooldown = self.config_data["servers"][guild_id]["config"].get("cooldown", self.config_data["global_settings"]["default_cooldown"])
-            embed.set_footer(text=f"Current cooldown: {cooldown} seconds")
-        else:
-            embed = discord.Embed(
-                title="Allowed channels for !info",
-                description="All channels are allowed (no restriction configured)",
-                color=discord.Color.green()
-            )
+            await message.channel.send(embed=embed)
+        return  # لا تنفذ أي أمر خارج القناة المسموح بها
 
-        await ctx.send(embed=embed)
+# --- Bot Commands ---
+@bot.command(name="lang")
+async def change_language(ctx, lang_code: str):
+    lang_code = lang_code.lower()
+    if lang_code not in ["en", "fr"]:
+        await ctx.send("❌ Invalid language. Available: `en`, `fr`")
+        return
+    user_languages[ctx.author.id] = lang_code
+    message = "✅ Language set to English." if lang_code == 'en' else "✅ Langue définie sur le français."
+    await ctx.send(f"{ctx.author.mention} {message}")
 
-    @commands.hybrid_command(name="info", description="Displays information about a Free Fire player")
-    @app_commands.describe(uid="FREE FIRE INFO")
-    async def player_info(self, ctx: commands.Context, uid: str):
-        guild_id = str(ctx.guild.id)
+@bot.command(name="ID")
+async def check_ban_command(ctx):
+    user_id = ctx.message.content[3:].strip()
+    lang = user_languages.get(ctx.author.id, DEFAULT_LANG)
 
-        if not uid.isdigit() or len(uid) < 6:
-            return await ctx.reply(" Invalid UID! It must:\n- Be only numbers\n- Have at least 6 digits", mention_author=False)
+    if not user_id.isdigit():
+        msg = {
+            "en": f"{ctx.author.mention} ❌ **Invalid UID!**",
+            "fr": f"{ctx.author.mention} ❌ **UID invalide !**"
+        }
+        await ctx.send(msg[lang])
+        return
 
-        if not await self.is_channel_allowed(ctx):
-            embed = discord.Embed(
-                title="Command Not Allowed",
-                description=f"This command can only be used in <#{ALLOWED_CHANNEL_ID}>.",
-                color=discord.Color.red()
-            )
-            return await ctx.send(embed=embed)
+    ban_status = await check_ban(user_id)
+    if not ban_status:
+        msg = {
+            "en": f"{ctx.author.mention} ❌ Could not get information. Please try again later.",
+            "fr": f"{ctx.author.mention} ❌ Impossible d'obtenir les informations. Veuillez réessayer plus tard."
+        }
+        await ctx.send(msg[lang])
+        return
 
-        cooldown = self.config_data["global_settings"]["default_cooldown"]
-        if guild_id in self.config_data["servers"]:
-            cooldown = self.config_data["servers"][guild_id]["config"].get("cooldown", cooldown)
+    is_banned = int(ban_status.get("is_banned", 0))
+    period = ban_status.get("period", "N/A")
+    nickname = ban_status.get("nickname", "NA")
+    region = ban_status.get("region", "N/A")
 
-        if ctx.author.id in self.cooldowns:
-            last_used = self.cooldowns[ctx.author.id]
-            if (datetime.now() - last_used).seconds < cooldown:
-                remaining = cooldown - (datetime.now() - last_used).seconds
-                return await ctx.send(f" Please wait {remaining}s before using this command again", ephemeral=True)
+    embed = discord.Embed(
+        color=0xFF0000 if is_banned else 0x00FF00,
+        timestamp=ctx.message.created_at
+    )
 
-        self.cooldowns[ctx.author.id] = datetime.now()
-
-        try:
-            async with ctx.typing():
-                async with self.session.get(f"{self.api_url}?uid={uid}") as response:
-                    if response.status == 404:
-                        return await ctx.send(f" Player with UID {uid} not found.")
-                    if response.status != 200:
-                        return await ctx.send("⚠️ API error. Try again later.")
-                    data = await response.json()
-
-            basic_info = data.get('basicInfo', {})
-            captain_info = data.get('captainBasicInfo', {})
-            clan_info = data.get('clanBasicInfo', {})
-            credit_score_info = data.get('creditScoreInfo', {})
-            pet_info = data.get('petInfo', {})
-            profile_info = data.get('profileInfo', {})
-            social_info = data.get('socialInfo', {})
-
-            region = basic_info.get('region', 'Not found')
-
-            embed = discord.Embed(
-                title=" Player Information",
-                color=discord.Color.green(),
-                timestamp=datetime.now()
-            )
-            embed.set_thumbnail(url=ctx.author.display_avatar.url)
-
-            embed.add_field(name="", value="\n".join([
-                "**┌  ACCOUNT BASIC INFO**",
-                f"**├─ Name**: {basic_info.get('nickname', 'Not found')}",
-                f"**├─ UID**: {uid}",
-                f"**├─ Level**: {basic_info.get('level', 'Not found')} (Exp: {basic_info.get('exp', '?')})",
-                f"**├─ Region**: {region}",
-                f"**├─ Likes**: {basic_info.get('liked', 'Not found')}",
-                f"**├─ Honor Score**: {credit_score_info.get('creditScore', 'Not found')}",
-                f"**└─ Signature**: {social_info.get('signature', 'None') or 'None'}"
-            ]), inline=False)
-
-            embed.add_field(name="", value="\n".join([
-                "**┌  ACCOUNT ACTIVITY**",
-                f"**├─ Most Recent OB**: {basic_info.get('releaseVersion', '?')}",
-                f"**├─ Current BP Badges**: {basic_info.get('badgeCnt', 'Not found')}",
-                f"**├─ BR Rank**: {'' if basic_info.get('showBrRank') else 'Not found'} {basic_info.get('rankingPoints', '?')}",
-                f"**├─ CS Rank**: {'' if basic_info.get('showCsRank') else 'Not found'} {basic_info.get('csRankingPoints', '?')} ",
-                f"**├─ Created At**: {self.convert_unix_timestamp(int(basic_info.get('createAt', 'Not found')))}",
-                f"**└─ Last Login**: {self.convert_unix_timestamp(int(basic_info.get('lastLoginAt', 'Not found')))}"
-            ]), inline=False)
-
-            embed.add_field(name="", value="\n".join([
-                "**┌  ACCOUNT OVERVIEW**",
-                f"**├─ Avatar ID**: {profile_info.get('avatarId', 'Not found')}",
-                f"**├─ Banner ID**: {basic_info.get('bannerId', 'Not found')}",
-                f"**├─ Pin ID**: {captain_info.get('pinId', 'Not found') if captain_info else 'Default'}",
-                f"**└─ Equipped Skills**: {profile_info.get('equipedSkills', 'Not found')}"
-            ]), inline=False)
-
-            embed.add_field(name="", value="\n".join([
-                "**┌  PET DETAILS**",
-                f"**├─ Equipped?**: {'Yes' if pet_info.get('isSelected') else 'Not Found'}",
-                f"**├─ Pet Name**: {pet_info.get('name', 'Not Found')}",
-                f"**├─ Pet Exp**: {pet_info.get('exp', 'Not Found')}",
-                f"**└─ Pet Level**: {pet_info.get('level', 'Not Found')}"
-            ]), inline=False)
-
-            if clan_info:
-                guild_info = [
-                    "**┌  GUILD INFO**",
-                    f"**├─ Guild Name**: {clan_info.get('clanName', 'Not found')}",
-                    f"**├─ Guild ID**: {clan_info.get('clanId', 'Not found')}",
-                    f"**├─ Guild Level**: {clan_info.get('clanLevel', 'Not found')}",
-                    f"**├─ Live Members**: {clan_info.get('memberNum', 'Not found')}/{clan_info.get('capacity', '?')}"
-                ]
-                if captain_info:
-                    guild_info.extend([
-                        "**└─ Leader Info**:",
-                        f"    **├─ Leader Name**: {captain_info.get('nickname', 'Not found')}",
-                        f"    **├─ Leader UID**: {captain_info.get('accountId', 'Not found')}",
-                        f"    **├─ Leader Level**: {captain_info.get('level', 'Not found')} (Exp: {captain_info.get('exp', '?')})",
-                        f"    **├─ Last Login**: {self.convert_unix_timestamp(int(captain_info.get('lastLoginAt', 'Not found')))}",
-                        f"    **├─ Title**: {captain_info.get('title', 'Not found')}",
-                        f"    **├─ BP Badges**: {captain_info.get('badgeCnt', '?')}",
-                        f"    **├─ BR Rank**: {'' if captain_info.get('showBrRank') else 'Not found'} {captain_info.get('rankingPoints', 'Not found')}",
-                        f"    **└─ CS Rank**: {'' if captain_info.get('showCsRank') else 'Not found'} {captain_info.get('csRankingPoints', 'Not found')} "
-                    ])
-                embed.add_field(name="", value="\n".join(guild_info), inline=False)
-
-            embed.set_footer(text="DEVELOPED BY MIDOU X CHEAT")
-            await ctx.send(embed=embed)
-
-            if region and uid:
-                try:
-                    image_url = f"{self.generate_url}?uid={uid}"
-                    print(f"Url d'image = {image_url}")
-                    if image_url:
-                        async with self.session.get(image_url) as img_file:
-                            if img_file.status == 200:
-                                with io.BytesIO(await img_file.read()) as buf:
-                                    file = discord.File(buf, filename=f"outfit_{uuid.uuid4().hex[:8]}.png")
-                                    await ctx.send(file=file)
-                                    print("Image envoyée avec succès")
-                            else:
-                                print(f"Erreur HTTP: {img_file.status}")
-                except Exception as e:
-                    print("Image generation failed:", e)
-
-        except Exception as e:
-            await ctx.send(f" Unexpected error: {e}")
-        finally:
-            gc.collect()
-
-    async def cog_unload(self):
-        await self.session.close()
-
-    async def _send_player_not_found(self, ctx, uid):
-        embed = discord.Embed(
-            title="❌ Player Not Found",
-            description=(
-                f"UID {uid} not found or inaccessible.\n\n"
-                "⚠️ **Note:** IND servers are currently not working."
-            ),
-            color=discord.Color.red()
+    if is_banned:
+        embed.title = "**▌ Banned Account 🛑 **" if lang == "en" else "**▌ Compte banni 🛑 **"
+        embed.description = (
+            f"**• {'Reason' if lang=='en' else 'Raison'}:** This account used cheats.\n"
+            f"**• {'Duration' if lang=='en' else 'Durée'}:** {period}\n"
+            f"**• {'Nickname' if lang=='en' else 'Pseudo'}:** {nickname}\n"
+            f"**• {'Region' if lang=='en' else 'Région'}:** {region}"
         )
-        embed.add_field(
-            name="Tip",
-            value="- Make sure the UID is correct\n- Try a different UID",
-            inline=False
+        embed.set_image(url="https://i.ibb.co/4gj5P7DH/banned.gif")
+    else:
+        embed.title = "**▌ Clean Account ✅ **" if lang == "en" else "**▌ Compte non banni ✅ **"
+        embed.description = (
+            f"**• {'Status' if lang=='en' else 'Statut'}:** No evidence of cheats.\n"
+            f"**• {'Nickname' if lang=='en' else 'Pseudo'}:** {nickname}\n"
+            f"**• {'Region' if lang=='en' else 'Région'}:** {region}"
         )
-        await ctx.send(embed=embed, ephemeral=True)
+        embed.set_image(url="https://i.ibb.co/SwKrD67z/notbanned.gif")
 
-    async def _send_api_error(self, ctx):
-        await ctx.send(embed=discord.Embed(
-            title="⚠️ API Error",
-            description="The Free Fire API is not responding. Try again later.",
-            color=discord.Color.gold()
-        ))
+    embed.set_footer(text="📌 Garena Free Fire")
+    embed.set_thumbnail(url=ctx.author.avatar.url if ctx.author.avatar else ctx.author.default_avatar.url)
+    await ctx.send(embed=embed)
 
+# --- Periodic Bot Status ---
+@tasks.loop(minutes=5)
+async def update_status():
+    try:
+        activity = discord.Activity(type=discord.ActivityType.watching, name=f"{len(bot.guilds)} servers")
+        await bot.change_presence(activity=activity)
+    except Exception as e:
+        print(f"⚠️ Status update failed: {e}")
 
-async def setup(bot):
-    await bot.add_cog(InfoCommands(bot))
+# --- Run Bot ---
+async def main():
+    async with bot:
+        await bot.start(TOKEN)
+
+if __name__ == "__main__":
+    asyncio.run(main())
