@@ -49,7 +49,7 @@ async def keep_alive():
 async def before_keep_alive():
     await bot.wait_until_ready()
 
-# --- Check Ban Function (باستخراج فقط بيانات الحظر الأساسية) ---
+# --- Check Ban Function ---
 async def check_ban(uid):
     global session
     if not session:
@@ -81,32 +81,48 @@ async def on_ready():
     bot_name = str(bot.user)
     print(f"✅ Bot connected as {bot.user} ({len(bot.guilds)} servers)")
 
-    # إنشاء جلسة aiohttp واحدة
     if not session:
         session = aiohttp.ClientSession()
 
-    # Start Flask server
     flask_thread = threading.Thread(target=run_flask, daemon=True)
     flask_thread.start()
     print("🚀 Flask server started in background")
 
-    # Start periodic status update and Keep-Alive
     update_status.start()
     keep_alive.start()
+
+# --- حذف الرسائل غير المخصصة للبوت فقط في القناة المخصصة ---
+@bot.event
+async def on_message(message):
+    if message.author.bot:
+        return  # تجاهل رسائل البوت
+
+    # إذا كانت الرسالة في القناة المخصصة
+    if message.channel.id == ALLOWED_CHANNEL_ID:
+        # حذف أي رسالة لا تبدأ بأمر البوت
+        if not message.content.startswith(bot.command_prefix):
+            try:
+                await message.delete()
+            except discord.Forbidden:
+                print(f"⚠️ Missing permissions to delete message in {message.channel}")
+            return
+    else:
+        # إذا كانت الرسالة خارج القناة المسموح بها وبدأت بأمر البوت
+        if message.content.startswith(bot.command_prefix):
+            embed = discord.Embed(
+                title="⚠️ Command Not Allowed",
+                description=f"This command is only allowed in <#{ALLOWED_CHANNEL_ID}>",
+                color=discord.Color.gold()
+            )
+            await message.channel.send(embed=embed)
+            return  # لا تنفذ أي أمر
+
+    # معالجة أوامر البوت في جميع القنوات
+    await bot.process_commands(message)
 
 # --- Bot Commands ---
 @bot.command(name="lang")
 async def change_language(ctx, lang_code: str):
-    # تحقق من القناة المسموح بها
-    if ctx.channel.id != ALLOWED_CHANNEL_ID:
-        embed = discord.Embed(
-            title="⚠️ Command Not Allowed",
-            description="This command is only allowed in the designated channel.",
-            color=discord.Color.gold()
-        )
-        await ctx.send(embed=embed)
-        return
-
     lang_code = lang_code.lower()
     if lang_code not in ["en", "fr"]:
         await ctx.send("❌ Invalid language. Available: `en`, `fr`")
@@ -117,16 +133,6 @@ async def change_language(ctx, lang_code: str):
 
 @bot.command(name="ID")
 async def check_ban_command(ctx, user_id: str):
-    # تحقق من القناة المسموح بها
-    if ctx.channel.id != ALLOWED_CHANNEL_ID:
-        embed = discord.Embed(
-            title="⚠️ Command Not Allowed",
-            description="This command is only allowed in the designated channel.",
-            color=discord.Color.gold()
-        )
-        await ctx.send(embed=embed)
-        return
-
     lang = user_languages.get(ctx.author.id, DEFAULT_LANG)
 
     if not user_id.isdigit():
