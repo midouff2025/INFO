@@ -56,7 +56,7 @@ async def check_ban(uid):
         print("⚠️ Session not initialized for check_ban")
         return None
 
-    api_url = f"https://profile-generator.up.railway.app/api/profile_info?uid={uid}"
+    api_url = f"http://raw.thug4ff.com/check_ban/{uid}"
     try:
         async with session.get(api_url) as response:
             if response.status != 200:
@@ -200,3 +200,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
