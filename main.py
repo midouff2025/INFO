@@ -55,20 +55,20 @@ async def check_ban(uid):
     if not session:
         print("⚠️ Session not initialized for check_ban")
         return None
-
     api_url = f"http://raw.thug4ff.com/check_ban/{uid}"
     try:
         async with session.get(api_url) as response:
             if response.status != 200:
                 return None
             res_json = await response.json()
-            ban_data = res_json.get("ban_status", {}).get("data", {})
-
+            if res_json.get("status") != 200:
+                return None
+            info = res_json.get("data", {})
             return {
-                "is_banned": ban_data.get("is_banned", 0),
-                "nickname": ban_data.get("nickname", ""),
-                "period": ban_data.get("period", 0),
-                "region": ban_data.get("region", "N/A")
+                "is_banned": info.get("is_banned", 0),
+                "nickname": info.get("nickname", ""),
+                "period": info.get("period", 0),
+                "region": info.get("region", "N/A")
             }
     except Exception as e:
         print(f"⚠️ Error in check_ban: {e}")
@@ -81,17 +81,20 @@ async def on_ready():
     bot_name = str(bot.user)
     print(f"✅ Bot connected as {bot.user} ({len(bot.guilds)} servers)")
 
+    # إنشاء جلسة aiohttp واحدة
     if not session:
         session = aiohttp.ClientSession()
 
+    # Start Flask server
     flask_thread = threading.Thread(target=run_flask, daemon=True)
     flask_thread.start()
     print("🚀 Flask server started in background")
 
+    # Start periodic status update and Keep-Alive
     update_status.start()
     keep_alive.start()
 
-# --- حذف الرسائل غير المخصصة للبوت فقط في القناة المخصصة ---
+# --- حذف الرسائل أو تحذير إذا كانت خارج القناة المسموح بها ---
 @bot.event
 async def on_message(message):
     if message.author.bot:
@@ -105,7 +108,8 @@ async def on_message(message):
                 await message.delete()
             except discord.Forbidden:
                 print(f"⚠️ Missing permissions to delete message in {message.channel}")
-            return
+        # معالجة أوامر البوت في القناة المسموح بها
+        await bot.process_commands(message)
     else:
         # إذا كانت الرسالة خارج القناة المسموح بها وبدأت بأمر البوت
         if message.content.startswith(bot.command_prefix):
@@ -115,10 +119,7 @@ async def on_message(message):
                 color=discord.Color.gold()
             )
             await message.channel.send(embed=embed)
-            return  # لا تنفذ أي أمر
-
-    # معالجة أوامر البوت في جميع القنوات
-    await bot.process_commands(message)
+        return  # لا تنفذ أي أمر خارج القناة المسموح بها
 
 # --- Bot Commands ---
 @bot.command(name="lang")
@@ -132,7 +133,8 @@ async def change_language(ctx, lang_code: str):
     await ctx.send(f"{ctx.author.mention} {message}")
 
 @bot.command(name="ID")
-async def check_ban_command(ctx, user_id: str):
+async def check_ban_command(ctx):
+    user_id = ctx.message.content[3:].strip()
     lang = user_languages.get(ctx.author.id, DEFAULT_LANG)
 
     if not user_id.isdigit():
@@ -200,4 +202,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
