@@ -48,26 +48,26 @@ async def keep_alive():
 async def before_keep_alive():
     await bot.wait_until_ready()
 
-# --- Check Ban Function (باستخدام نفس الجلسة) ---
+# --- Check Ban Function (باستخراج فقط بيانات الحظر الأساسية) ---
 async def check_ban(uid):
     global session
     if not session:
         print("⚠️ Session not initialized for check_ban")
         return None
+
     api_url = f"https://profile-generator.up.railway.app/api/profile_info?uid={uid}"
     try:
         async with session.get(api_url) as response:
             if response.status != 200:
                 return None
             res_json = await response.json()
-            if res_json.get("status") != 200:
-                return None
-            info = res_json.get("data", {})
+            ban_data = res_json.get("ban_status", {}).get("data", {})
+
             return {
-                "is_banned": info.get("is_banned", 0),
-                "nickname": info.get("nickname", ""),
-                "period": info.get("period", 0),
-                "region": info.get("region", "N/A")
+                "is_banned": ban_data.get("is_banned", 0),
+                "nickname": ban_data.get("nickname", ""),
+                "period": ban_data.get("period", 0),
+                "region": ban_data.get("region", "N/A")
             }
     except Exception as e:
         print(f"⚠️ Error in check_ban: {e}")
@@ -105,8 +105,7 @@ async def change_language(ctx, lang_code: str):
     await ctx.send(f"{ctx.author.mention} {message}")
 
 @bot.command(name="ID")
-async def check_ban_command(ctx):
-    user_id = ctx.message.content[3:].strip()
+async def check_ban_command(ctx, user_id: str):
     lang = user_languages.get(ctx.author.id, DEFAULT_LANG)
 
     if not user_id.isdigit():
@@ -174,4 +173,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
