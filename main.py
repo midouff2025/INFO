@@ -9,6 +9,7 @@ import aiohttp
 # --- Flask Keep-Alive ---
 app = Flask(__name__)
 bot_name = "Loading..."
+ALLOWED_CHANNEL_ID = 1406848032070176788  # القناة المسموح بها فقط
 
 @app.route("/")
 def home():
@@ -96,6 +97,16 @@ async def on_ready():
 # --- Bot Commands ---
 @bot.command(name="lang")
 async def change_language(ctx, lang_code: str):
+    # تحقق من القناة المسموح بها
+    if ctx.channel.id != ALLOWED_CHANNEL_ID:
+        embed = discord.Embed(
+            title="⚠️ Command Not Allowed",
+            description="This command is only allowed in the designated channel.",
+            color=discord.Color.gold()
+        )
+        await ctx.send(embed=embed)
+        return
+
     lang_code = lang_code.lower()
     if lang_code not in ["en", "fr"]:
         await ctx.send("❌ Invalid language. Available: `en`, `fr`")
@@ -106,6 +117,16 @@ async def change_language(ctx, lang_code: str):
 
 @bot.command(name="ID")
 async def check_ban_command(ctx, user_id: str):
+    # تحقق من القناة المسموح بها
+    if ctx.channel.id != ALLOWED_CHANNEL_ID:
+        embed = discord.Embed(
+            title="⚠️ Command Not Allowed",
+            description="This command is only allowed in the designated channel.",
+            color=discord.Color.gold()
+        )
+        await ctx.send(embed=embed)
+        return
+
     lang = user_languages.get(ctx.author.id, DEFAULT_LANG)
 
     if not user_id.isdigit():
