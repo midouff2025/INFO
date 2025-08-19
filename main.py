@@ -35,7 +35,6 @@ session = None  # جلسة aiohttp واحدة لجميع الطلبات
 # --- Keep-Alive & Global Session Setup ---
 @tasks.loop(minutes=1)
 async def keep_alive():
-    """Ping Render URL كل دقيقة لضمان البوت لا ينام"""
     global session
     if session:
         try:
@@ -94,32 +93,9 @@ async def on_ready():
     update_status.start()
     keep_alive.start()
 
-# --- حذف الرسائل أو تحذير إذا كانت خارج القناة المسموح بها ---
-@bot.event
-async def on_message(message):
-    if message.author.bot:
-        return  # تجاهل رسائل البوت
-
-    # إذا كانت الرسالة في القناة المخصصة
-    if message.channel.id == ALLOWED_CHANNEL_ID:
-        # حذف أي رسالة لا تبدأ بأمر البوت
-        if not message.content.startswith(bot.command_prefix):
-            try:
-                await message.delete()
-            except discord.Forbidden:
-                print(f"⚠️ Missing permissions to delete message in {message.channel}")
-        # معالجة أوامر البوت في القناة المسموح بها
-        await bot.process_commands(message)
-    else:
-        # إذا كانت الرسالة خارج القناة المسموح بها وبدأت بأمر البوت
-        if message.content.startswith(bot.command_prefix):
-            embed = discord.Embed(
-                title="⚠️ Command Not Allowed",
-                description=f"This command is only allowed in <#{ALLOWED_CHANNEL_ID}>",
-                color=discord.Color.gold()
-            )
-            await message.channel.send(embed=embed)
-        return  # لا تنفذ أي أمر خارج القناة المسموح بها
+# --- Channel Check Utility ---
+async def is_channel_allowed(ctx):
+    return ctx.channel.id == ALLOWED_CHANNEL_ID
 
 # --- Bot Commands ---
 @bot.command(name="lang")
@@ -134,6 +110,15 @@ async def change_language(ctx, lang_code: str):
 
 @bot.command(name="ID")
 async def check_ban_command(ctx):
+    # تحقق من القناة المسموح بها قبل تنفيذ الأمر
+    if not await is_channel_allowed(ctx):
+        embed = discord.Embed(
+            title="⚠️ Command Not Allowed",
+            description=f"This command is only allowed in <#{ALLOWED_CHANNEL_ID}>",
+            color=discord.Color.red()
+        )
+        return await ctx.send(embed=embed)
+
     user_id = ctx.message.content[3:].strip()
     lang = user_languages.get(ctx.author.id, DEFAULT_LANG)
 
@@ -202,4 +187,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
