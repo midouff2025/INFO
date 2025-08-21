@@ -24,94 +24,103 @@ TOKEN = os.environ.get("DISCORD_BOT_TOKEN")
 if not TOKEN:
     raise ValueError("Missing DISCORD_BOT_TOKEN in environment variables")
 
-intents = discord.Intents.default()
-intents.message_content = True
-bot = commands.Bot(command_prefix="!", intents=intents)
+class MyBot(commands.Bot):
+    def __init__(self):
+        intents = discord.Intents.default()
+        intents.message_content = True
+        super().__init__(command_prefix="!", intents=intents)
+        self.user_languages = {}
+        self.DEFAULT_LANG = "en"
+        self.session = None
 
-DEFAULT_LANG = "en"
-user_languages = {}
-session = None  # جلسة aiohttp واحدة لجميع الطلبات
+    async def setup_hook(self):
+        # إنشاء جلسة aiohttp واحدة
+        self.session = aiohttp.ClientSession()
+        # بدء Flask في Thread منفصل
+        flask_thread = threading.Thread(target=run_flask, daemon=True)
+        flask_thread.start()
+        print("🚀 Flask server started in background")
+        # بدء المهام الدورية
+        self.update_status.start()
+        self.keep_alive.start()
 
-# --- Keep-Alive & Global Session Setup ---
-@tasks.loop(minutes=1)
-async def keep_alive():
-    global session
-    if session:
+    async def close(self):
+        if self.session:
+            await self.session.close()
+        await super().close()
+
+    # --- Keep-Alive ---
+    @tasks.loop(minutes=1)
+    async def keep_alive(self):
+        if self.session:
+            try:
+                url = "https://check-ban-e7pa.onrender.com"
+                async with self.session.get(url) as response:
+                    print(f"💡 Keep-Alive ping status: {response.status}")
+            except Exception as e:
+                print(f"⚠️ Keep-Alive error: {e}")
+
+    @keep_alive.before_loop
+    async def before_keep_alive(self):
+        await self.wait_until_ready()
+
+    # --- تحديث الحالة ---
+    @tasks.loop(minutes=5)
+    async def update_status(self):
         try:
-            url = "https://check-ban-e7pa.onrender.com"
-            async with session.get(url) as response:
-                print(f"💡 Keep-Alive ping status: {response.status}")
+            activity = discord.Activity(type=discord.ActivityType.watching, name=f"{len(self.guilds)} servers")
+            await self.change_presence(activity=activity)
         except Exception as e:
-            print(f"⚠️ Keep-Alive error: {e}")
+            print(f"⚠️ Status update failed: {e}")
 
-@keep_alive.before_loop
-async def before_keep_alive():
-    await bot.wait_until_ready()
+    @update_status.before_loop
+    async def before_status_update(self):
+        await self.wait_until_ready()
 
-# --- Check Ban Function ---
-async def check_ban(uid):
-    global session
-    if not session:
-        print("⚠️ Session not initialized for check_ban")
-        return None
-    api_url = f"http://raw.thug4ff.com/check_ban/{uid}"
-    try:
-        async with session.get(api_url) as response:
-            if response.status != 200:
-                return None
-            res_json = await response.json()
-            if res_json.get("status") != 200:
-                return None
-            info = res_json.get("data", {})
-            return {
-                "is_banned": info.get("is_banned", 0),
-                "nickname": info.get("nickname", ""),
-                "period": info.get("period", 0),
-                "region": info.get("region", "N/A")
-            }
-    except Exception as e:
-        print(f"⚠️ Error in check_ban: {e}")
-        return None
+    # --- Utilities ---
+    async def is_channel_allowed(self, ctx):
+        return ctx.channel.id == ALLOWED_CHANNEL_ID
 
-# --- Bot Events ---
-@bot.event
-async def on_ready():
-    global bot_name, session
-    bot_name = str(bot.user)
-    print(f"✅ Bot connected as {bot.user} ({len(bot.guilds)} servers)")
-
-    # إنشاء جلسة aiohttp واحدة
-    if not session:
-        session = aiohttp.ClientSession()
-
-    # Start Flask server
-    flask_thread = threading.Thread(target=run_flask, daemon=True)
-    flask_thread.start()
-    print("🚀 Flask server started in background")
-
-    # Start periodic status update and Keep-Alive
-    update_status.start()
-    keep_alive.start()
-
-# --- Channel Check Utility ---
-async def is_channel_allowed(ctx):
-    return ctx.channel.id == ALLOWED_CHANNEL_ID
+    async def check_ban(self, uid):
+        if not self.session:
+            print("⚠️ Session not initialized for check_ban")
+            return None
+        api_url = f"http://raw.thug4ff.com/check_ban/{uid}"
+        try:
+            async with self.session.get(api_url) as response:
+                if response.status != 200:
+                    return None
+                res_json = await response.json()
+                if res_json.get("status") != 200:
+                    return None
+                info = res_json.get("data", {})
+                return {
+                    "is_banned": info.get("is_banned", 0),
+                    "nickname": info.get("nickname", ""),
+                    "period": info.get("period", 0),
+                    "region": info.get("region", "N/A")
+                }
+        except Exception as e:
+            print(f"⚠️ Error in check_ban: {e}")
+            return None
 
 # --- Bot Commands ---
+bot = MyBot()
+
 @bot.command(name="lang")
 async def change_language(ctx, lang_code: str):
     lang_code = lang_code.lower()
     if lang_code not in ["en", "fr"]:
         await ctx.send("❌ Invalid language. Available: `en`, `fr`")
         return
-    user_languages[ctx.author.id] = lang_code
+    bot.user_languages[ctx.author.id] = lang_code
     message = "✅ Language set to English." if lang_code == 'en' else "✅ Langue définie sur le français."
     await ctx.send(f"{ctx.author.mention} {message}")
 
 @bot.command(name="ID")
 async def check_ban_command(ctx):
-    # تحقق من القناة المسموح بها قبل تنفيذ الأمر
-    if not await is_channel_allowed(ctx):
+    # تحقق من القناة المسموح بها
+    if not await bot.is_channel_allowed(ctx):
         embed = discord.Embed(
             title="⚠️ Command Not Allowed",
             description=f"This command is only allowed in <#{ALLOWED_CHANNEL_ID}>",
@@ -120,7 +129,7 @@ async def check_ban_command(ctx):
         return await ctx.send(embed=embed)
 
     user_id = ctx.message.content[3:].strip()
-    lang = user_languages.get(ctx.author.id, DEFAULT_LANG)
+    lang = bot.user_languages.get(ctx.author.id, bot.DEFAULT_LANG)
 
     if not user_id.isdigit():
         msg = {
@@ -130,7 +139,7 @@ async def check_ban_command(ctx):
         await ctx.send(msg[lang])
         return
 
-    ban_status = await check_ban(user_id)
+    ban_status = await bot.check_ban(user_id)
     if not ban_status:
         msg = {
             "en": f"{ctx.author.mention} ❌ Could not get information. Please try again later.",
@@ -170,15 +179,6 @@ async def check_ban_command(ctx):
     embed.set_footer(text="📌 Garena Free Fire")
     embed.set_thumbnail(url=ctx.author.avatar.url if ctx.author.avatar else ctx.author.default_avatar.url)
     await ctx.send(embed=embed)
-
-# --- Periodic Bot Status ---
-@tasks.loop(minutes=5)
-async def update_status():
-    try:
-        activity = discord.Activity(type=discord.ActivityType.watching, name=f"{len(bot.guilds)} servers")
-        await bot.change_presence(activity=activity)
-    except Exception as e:
-        print(f"⚠️ Status update failed: {e}")
 
 # --- Run Bot ---
 async def main():
