@@ -104,6 +104,25 @@ class MyBot(commands.Bot):
             print(f"⚠️ Error in check_ban: {e}")
             return None
 
+    # --- حذف الرسائل غير المرغوب فيها ---
+    async def on_message(self, message):
+        if message.author.bot:
+            return
+
+        # السماح فقط بالأوامر في القناة المسموح بها
+        if message.channel.id == ALLOWED_CHANNEL_ID:
+            if not message.content.startswith("!ID") and not message.content.startswith("!lang"):
+                try:
+                    await message.delete()
+                    print(f"🗑️ Deleted message from {message.author} in {message.channel}")
+                except discord.Forbidden:
+                    print(f"⚠️ Missing permissions to delete message in {message.channel}")
+                except discord.HTTPException as e:
+                    print(f"⚠️ Failed to delete message: {e}")
+                return
+
+        await self.process_commands(message)
+
 # --- Bot Commands ---
 bot = MyBot()
 
