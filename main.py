@@ -177,14 +177,43 @@ async def check_ban_command(ctx):
         timestamp=ctx.message.created_at
     )
 
-    if is_banned:
-        embed.title = "**▌ Banned Account 🛑 **" if lang == "en" else "**▌ Compte banni 🛑 **"
-        embed.description = (
-            f"**• {'Reason' if lang=='en' else 'Raison'}:** This account used cheats.\n"
-            f"**• {'Duration' if lang=='en' else 'Durée'}:** {period}\n"
-            f"**• {'Nickname' if lang=='en' else 'Pseudo'}:** {nickname}\n"
-            f"**• {'Region' if lang=='en' else 'Région'}:** {region}"
-        )
+   if is_banned:
+    # معالجة مدة الحظر
+    period_code = int(period) if str(period).isdigit() else 0
+    if lang == "en":
+        if period_code == 1:
+            period_text = "1 month"
+        elif period_code == 2:
+            period_text = "2 months"
+        elif period_code == 3:
+            period_text = "3 months"
+        elif period_code == 6:
+            period_text = "6 months"
+        elif period_code > 6:
+            period_text = "Banned for more than 6 months"
+        else:
+            period_text = f"{period_code} months"
+    else:  # French
+        if period_code == 1:
+            period_text = "1 mois"
+        elif period_code == 2:
+            period_text = "2 mois"
+        elif period_code == 3:
+            period_text = "3 mois"
+        elif period_code == 6:
+            period_text = "6 mois"
+        elif period_code > 6:
+            period_text = "Ce compte est banni depuis plus de 6 mois"
+        else:
+            period_text = f"{period_code} mois"
+
+    embed.title = "**▌ Banned Account 🛑 **" if lang == "en" else "**▌ Compte banni 🛑 **"
+    embed.description = (
+        f"**• {'Reason' if lang=='en' else 'Raison'}:** This account used cheats.\n"
+        f"**• {'Duration' if lang=='en' else 'Durée'}:** {period_text}\n"
+        f"**• {'Nickname' if lang=='en' else 'Pseudo'}:** {nickname}\n"
+        f"**• {'Region' if lang=='en' else 'Région'}:** {region}"
+    )
         embed.set_image(url="https://i.ibb.co/4gj5P7DH/banned.gif")
     else:
         embed.title = "**▌ Clean Account ✅ **" if lang == "en" else "**▌ Compte non banni ✅ **"
@@ -206,3 +235,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
