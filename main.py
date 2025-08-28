@@ -210,7 +210,6 @@ async def check_ban_command(ctx):
         embed.title = "**▌ Banned Account 🛑 **" if lang == "en" else "**▌ Compte banni 🛑 **"
         embed.description = (
             f"**• {'Reason' if lang=='en' else 'Raison'}:** This account used cheats.\n"
-            f"**• {'Duration' if lang=='en' else 'Durée'}:** {period_text}\n"
             f"**• {'Nickname' if lang=='en' else 'Pseudo'}:** {nickname}\n"
             f"**• {'Region' if lang=='en' else 'Région'}:** {region}"
         )
@@ -235,3 +234,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
