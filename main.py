@@ -54,7 +54,7 @@ class MyBot(commands.Bot):
     async def keep_alive(self):
         if self.session:
             try:
-                url = "https://check-hsz1.onrender.com"
+                url = "https://info-3.onrender.com"
                 async with self.session.get(url) as response:
                     print(f"💡 Keep-Alive ping status: {response.status}")
             except Exception as e:
@@ -234,6 +234,7 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
 
 
 
